@@ -16,6 +16,10 @@ public class CodecExceptionHandler {
             case FUNCTION_NOT_FOUND -> HttpStatus.NOT_FOUND;
             case SELECTOR_COLLISION -> HttpStatus.CONFLICT;
             case INPUT_TOO_LARGE, DEPTH_EXCEEDED -> HttpStatus.PAYLOAD_TOO_LARGE;
+            // Storage-side failures are the server's problem, never a caller input
+            // error: distinguish them from 4xx parameter/codec rejections.
+            case PERSISTENCE_ERROR -> HttpStatus.INTERNAL_SERVER_ERROR;
+            case CORRUPTED_STATE -> HttpStatus.INTERNAL_SERVER_ERROR;
             default -> HttpStatus.BAD_REQUEST;
         };
         return ResponseEntity.status(status).body(new ErrorBody(

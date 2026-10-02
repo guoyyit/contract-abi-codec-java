@@ -105,8 +105,11 @@ public final class AbiDecoder {
         /** Reads exactly {@code len} bytes starting at absolute offset, bounded by {@link #limit}. */
         private byte[] readBytes(int offset, int len, String path) {
             if (offset < 0 || len < 0 || (long) offset + len > limit) {
+                int remaining = Math.max(0, limit - offset);
                 throw new CodecException(ErrorCode.OUT_OF_BOUNDS_READ, path,
-                        "read [" + offset + ",+" + len + ") exceeds block end " + limit);
+                        "read of " + len + " bytes at offset " + offset
+                                + " exceeds block end " + limit + " (only " + remaining
+                                + " byte(s) remain)");
             }
             byte[] out = new byte[len];
             System.arraycopy(data, offset, out, 0, len);
@@ -154,15 +157,20 @@ public final class AbiDecoder {
                 }
             }
 
-            // 1) Every offset word must be readable; offsets anchor the head/tail boundary.
-            for (int i = 0; i < n; i++) {
-                if (dynamic[i]) {
-                    int slot = headStart + prefixSize(headSizes, i);
-                    String childPath = path + "[" + i + "]";
-                    if ((long) slot + WORD > data.length) {
-                        throw new CodecException(ErrorCode.OUT_OF_BOUNDS_READ, childPath,
-                                "offset word is outside the buffer");
-                    }
+        // 1) Every offset word must be readable; offsets anchor the head/tail boundary.
+        for (int i = 0; i < n; i++) {
+            if (dynamic[i]) {
+                int slot = headStart + prefixSize(headSizes, i);
+                String childPath = path + "[" + i + "]";
+                // The offset word belongs to THIS block and is bounded by its end, not
+                // by the whole buffer: bytes past the block end may belong to an
+                // enclosing sibling and must never be read as an offset here.
+                if ((long) slot + WORD > c.end) {
+                    throw new CodecException(ErrorCode.OUT_OF_BOUNDS_READ, childPath,
+                            "offset word at [" + slot + ",+" + WORD
+                                    + ") is outside the block ending at " + c.end
+                                    + " (input length " + data.length + ")");
+                }
                     BigInteger rel = readUnsignedWord(slot, childPath);
                     if (rel.compareTo(BigInteger.valueOf(Integer.MAX_VALUE - offsetBase)) > 0) {
                         throw new CodecException(ErrorCode.OUT_OF_BOUNDS_READ, childPath,
@@ -180,10 +188,11 @@ public final class AbiDecoder {
             for (int i = 0; i < n; i++) {
                 int slotStart = headStart + prefixSize(headSizes, i);
                 String childPath = path + "[" + i + "]";
-                if ((long) slotStart + headSizes[i] > data.length) {
+                if ((long) slotStart + headSizes[i] > c.end) {
                     throw new CodecException(ErrorCode.OUT_OF_BOUNDS_READ, childPath,
                             "head slot [" + slotStart + ",+" + headSizes[i]
-                                    + ") is outside the buffer");
+                                    + ") is outside the block ending at " + c.end
+                                    + " (input length " + data.length + ")");
                 }
             }
             for (int k = 0; k < dynamicCount; k++) {
@@ -197,7 +206,8 @@ public final class AbiDecoder {
                 }
                 if (offsets[i] > c.end) {
                     throw new CodecException(ErrorCode.OUT_OF_BOUNDS_READ, childPath,
-                            "offset " + (offsets[i] - offsetBase) + " exceeds block end");
+                            "offset " + (offsets[i] - offsetBase)
+                                    + " exceeds block end " + (c.end - offsetBase));
                 }
             }
             // Strictly increasing offsets.

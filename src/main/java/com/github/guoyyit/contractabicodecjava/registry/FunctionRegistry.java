@@ -77,13 +77,26 @@ public final class FunctionRegistry {
         }
         synchronized (this) {
             List<FunctionDefinition> assigned = new ArrayList<>(functions.size());
+            List<FunctionDefinition> previousBySignature = new ArrayList<>(bySignature.values());
             for (FunctionDefinition f : functions) {
                 CanonicalSignature.validateName(f.name());
                 FunctionDefinition withSelector = f.withSelector(selectorCalculator.selector(f));
                 bySignature.put(CanonicalSignature.of(withSelector), withSelector);
                 assigned.add(withSelector);
             }
-            persistOrThrow();
+            try {
+                persistOrThrow();
+            } catch (RuntimeException e) {
+                // Persistence failed: roll the in-memory maps back to the pre-call state
+                // so the failed registration leaves no observable trace. The store never
+                // published a new file (it writes via a temp file + atomic move), so the
+                // on-disk state is unchanged as well.
+                bySignature.clear();
+                for (FunctionDefinition f : previousBySignature) {
+                    bySignature.put(CanonicalSignature.of(f), f);
+                }
+                throw e;
+            }
             layoutCache.invalidate();
             snapshot = rebuild(snapshot.version() + 1);
             return List.copyOf(assigned);
@@ -105,8 +118,17 @@ public final class FunctionRegistry {
                 throw new CodecException(ErrorCode.FUNCTION_NOT_FOUND,
                         "cannot alias unknown signature: " + canonicalSignature);
             }
-            userAliases.put(alias, canonicalSignature);
-            persistOrThrow();
+            String previousAlias = userAliases.put(alias, canonicalSignature);
+            try {
+                persistOrThrow();
+            } catch (RuntimeException e) {
+                if (previousAlias == null) {
+                    userAliases.remove(alias);
+                } else {
+                    userAliases.put(alias, previousAlias);
+                }
+                throw e;
+            }
             snapshot = rebuild(snapshot.version() + 1);
         }
     }
