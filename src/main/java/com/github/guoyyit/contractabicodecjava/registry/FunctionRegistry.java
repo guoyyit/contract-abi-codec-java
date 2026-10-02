@@ -76,22 +76,25 @@ public final class FunctionRegistry {
             throw new CodecException(ErrorCode.INVALID_SIGNATURE, "registerAll requires at least one function");
         }
         synchronized (this) {
+            // Validate and build the candidate state WITHOUT touching live state. The
+            // durable write must succeed first; otherwise the failure leaves no trace in
+            // memory or on disk and later registrations cannot observe the failed attempt.
             List<FunctionDefinition> assigned = new ArrayList<>(functions.size());
+            Map<String, FunctionDefinition> candidate = new TreeMap<>(bySignature);
             for (FunctionDefinition f : functions) {
                 CanonicalSignature.validateName(f.name());
                 FunctionDefinition withSelector = f.withSelector(selectorCalculator.selector(f));
-                bySignature.put(CanonicalSignature.of(withSelector), withSelector);
+                candidate.put(CanonicalSignature.of(withSelector), withSelector);
                 assigned.add(withSelector);
             }
-            persistOrThrow();
+            // Persist the candidate state; any storage fault throws before mutation.
+            store.persist(List.copyOf(candidate.values()));
+            bySignature.clear();
+            bySignature.putAll(candidate);
             layoutCache.invalidate();
             snapshot = rebuild(snapshot.version() + 1);
             return List.copyOf(assigned);
         }
-    }
-
-    private void persistOrThrow() {
-        store.persist(List.copyOf(bySignature.values()));
     }
 
     /** Manually disambiguate a colliding selector (or declare any shortcut) for a signature. */
@@ -105,8 +108,12 @@ public final class FunctionRegistry {
                 throw new CodecException(ErrorCode.FUNCTION_NOT_FOUND,
                         "cannot alias unknown signature: " + canonicalSignature);
             }
-            userAliases.put(alias, canonicalSignature);
-            persistOrThrow();
+            // Durable write first; keep the alias only after it has been persisted.
+            Map<String, String> candidateAliases = new TreeMap<>(userAliases);
+            candidateAliases.put(alias, canonicalSignature);
+            store.persist(List.copyOf(bySignature.values()));
+            userAliases.clear();
+            userAliases.putAll(candidateAliases);
             snapshot = rebuild(snapshot.version() + 1);
         }
     }

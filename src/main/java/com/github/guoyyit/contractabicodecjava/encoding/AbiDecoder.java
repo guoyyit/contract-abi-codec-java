@@ -106,7 +106,8 @@ public final class AbiDecoder {
         private byte[] readBytes(int offset, int len, String path) {
             if (offset < 0 || len < 0 || (long) offset + len > limit) {
                 throw new CodecException(ErrorCode.OUT_OF_BOUNDS_READ, path,
-                        "read [" + offset + ",+" + len + ") exceeds block end " + limit);
+                        "read [" + offset + ",+" + len + ") exceeds block end " + limit
+                                + " (input is " + data.length + " bytes)");
             }
             byte[] out = new byte[len];
             System.arraycopy(data, offset, out, 0, len);
@@ -189,15 +190,20 @@ public final class AbiDecoder {
             for (int k = 0; k < dynamicCount; k++) {
                 int i = dynIndexes[k];
                 String childPath = path + "[" + i + "]";
+                // Bounds first: a truncated inner block makes the (absolute) offset land
+                // past its own end even though it appears inside an outer head section,
+                // and that must stay OUT_OF_BOUNDS_READ at every nesting depth.
+                if (offsets[i] > c.end) {
+                    throw new CodecException(ErrorCode.OUT_OF_BOUNDS_READ, childPath,
+                            "dynamic value at offset " + offsets[i]
+                                    + " exceeds block end " + c.end
+                                    + " (only " + data.length + " input bytes available)");
+                }
                 if (offsets[i] < tailBoundary) {
                     throw new CodecException(ErrorCode.NON_CANONICAL_ENCODING, childPath,
                             "dynamic offset " + (offsets[i] - offsetBase)
                                     + " points into the head section (boundary "
                                     + (tailBoundary - offsetBase) + ")");
-                }
-                if (offsets[i] > c.end) {
-                    throw new CodecException(ErrorCode.OUT_OF_BOUNDS_READ, childPath,
-                            "offset " + (offsets[i] - offsetBase) + " exceeds block end");
                 }
             }
             // Strictly increasing offsets.
@@ -313,7 +319,9 @@ public final class AbiDecoder {
             if (type instanceof AbiType.DynamicBytes || type instanceof AbiType.String) {
                 if ((long) c.pos + WORD > c.end) {
                     throw new CodecException(ErrorCode.OUT_OF_BOUNDS_READ, path,
-                            "length word is outside the block");
+                            "length word at offset " + c.pos + " needs " + WORD
+                                    + " bytes but the block ends at " + c.end
+                                    + " (input is " + data.length + " bytes)");
                 }
                 BigInteger lenBi = readUnsignedWord(c.pos, path);
                 if (lenBi.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0) {
@@ -327,8 +335,13 @@ public final class AbiDecoder {
                 // as OUT_OF_BOUNDS_READ, never as a padding/canonicality error.
                 if ((long) dataStart + len + pad > c.end) {
                     throw new CodecException(ErrorCode.OUT_OF_BOUNDS_READ, path,
-                            "dynamic payload declares " + len + " bytes but block ends at "
-                                    + (c.end - dataStart));
+                            "dynamic payload at offset " + dataStart + " declares "
+                                    + len + " data byte(s) plus " + pad
+                                    + " padding byte(s) ending at " + (dataStart + len + pad)
+                                    + ", but the block ends at " + c.end
+                                    + " (input is " + data.length + " bytes, "
+                                    + Math.max(0, data.length - dataStart)
+                                    + " byte(s) remain after the offset)");
                 }
                 byte[] raw = readBytes(dataStart, len, path);
                 byte[] tail = readBytes(dataStart + len, pad, path);
